@@ -1,0 +1,12 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-critical: #E24B4A;
+  --color-high:     #BA7517;
+  --color-medium:   #888780;
+  --color-low:      #1D9E75;
+}
