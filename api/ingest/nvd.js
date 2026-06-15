@@ -8,6 +8,10 @@
  * Source: https://services.nvd.nist.gov/rest/json/cves/2.0
  * Cadence: Daily delta, weekly full
  * Size: ~250k CVEs, 2M+ CPE entries
+ *
+ * Usage:
+ *   node ingest/nvd.js          -- delta mode (last 8 days)
+ *   node ingest/nvd.js --full   -- full ingest (all CVEs)
  */
 
 import https from 'https';
@@ -168,7 +172,6 @@ function parseCvssVector(vector) {
 
   const parts = {};
   const segments = vector.split('/');
-
   for (const seg of segments) {
     const [key, val] = seg.split(':');
     parts[key] = val;
@@ -189,19 +192,15 @@ function parseCvssVector(vector) {
 
 function extractCvss(cve) {
   const metrics = cve.metrics || {};
-
-  // Prefer CVSS v3.1, fall back to v3.0, then v2
   const v31 = metrics.cvssMetricV31?.[0]?.cvssData;
   const v30 = metrics.cvssMetricV30?.[0]?.cvssData;
   const v2  = metrics.cvssMetricV2?.[0]?.cvssData;
-
   const data = v31 || v30 || v2 || null;
   if (!data) return { cvss_base: null, cvss_vector: null, cvss_version: null, ...parseCvssVector(null) };
-
   return {
-    cvss_base:    data.baseScore || null,
+    cvss_base:    data.baseScore   || null,
     cvss_vector:  data.vectorString || null,
-    cvss_version: data.version || null,
+    cvss_version: data.version     || null,
     ...parseCvssVector(data.vectorString)
   };
 }
@@ -225,23 +224,15 @@ function extractDescription(cve) {
 function extractCpes(cveId, configurations) {
   const cpes = [];
   if (!configurations) return cpes;
-
   for (const config of configurations) {
-    const nodes = config.nodes || [];
-    for (const node of nodes) {
-      const matches = node.cpeMatch || [];
-      for (const match of matches) {
-        if (!match.vulnerable) continue;
-        const cpe = match.criteria;
-        if (!cpe) continue;
-
-        // Parse CPE string: cpe:2.3:type:vendor:product:version:...
-        const parts = cpe.split(':');
+    for (const node of (config.nodes || [])) {
+      for (const match of (node.cpeMatch || [])) {
+        if (!match.vulnerable || !match.criteria) continue;
+        const parts   = match.criteria.split(':');
         const vendor  = parts[3] || null;
         const product = parts[4] || null;
         const version = parts[5] || null;
-
-        cpes.push({ cve_id: cveId, cpe_string: cpe, vendor, product, version });
+        cpes.push({ cve_id: cveId, cpe_string: match.criteria, vendor, product, version });
       }
     }
   }
@@ -249,20 +240,17 @@ function extractCpes(cveId, configurations) {
 }
 
 function hasPatchReference(cve) {
-  const refs = cve.references || [];
   const patchTags = ['Patch', 'Vendor Advisory', 'Mitigation'];
-  return refs.some(r => (r.tags || []).some(t => patchTags.includes(t)));
+  return (cve.references || []).some(r => (r.tags || []).some(t => patchTags.includes(t)));
 }
 
 function transformCve(item) {
-  const cve = item.cve;
-  const cveId = cve.id;
+  const cve  = item.cve;
   const cvss = extractCvss(cve);
-
   return {
     core: {
-      cve_id:              cveId,
-      published_date:      cve.published?.split('T')[0] || null,
+      cve_id:              cve.id,
+      published_date:      cve.published?.split('T')[0]    || null,
       modified_date:       cve.lastModified?.split('T')[0] || null,
       description:         extractDescription(cve),
       cvss_base:           cvss.cvss_base,
@@ -276,7 +264,7 @@ function transformCve(item) {
       scope:               cvss.scope,
       source_updated:      new Date()
     },
-    cpes: extractCpes(cveId, cve.configurations)
+    cpes: extractCpes(cve.id, cve.configurations)
   };
 }
 
@@ -296,9 +284,7 @@ async function loadVendorMap() {
 function getPlatformTag(vendor, vendorMap) {
   if (!vendor) return 'other';
   const v = vendor.toLowerCase();
-  // Exact match first
   if (vendorMap.has(v)) return vendorMap.get(v);
-  // Partial match
   for (const [pattern, tag] of vendorMap) {
     if (v.includes(pattern) || pattern.includes(v)) return tag;
   }
@@ -306,79 +292,70 @@ function getPlatformTag(vendor, vendorMap) {
 }
 
 // ============================================
-// Load stage
+// Load stage — ON CONFLICT upsert
 // ============================================
 
 async function upsertCveBatch(records, vendorMap) {
   let inserted = 0;
-  let updated = 0;
-  let failed = 0;
+  let updated  = 0;
+  let failed   = 0;
 
-  for (const record of records) {
-    const { core, cpes } = record;
-
+  for (const { core, cpes } of records) {
     try {
-      // Check if exists
-      const existing = await pool.query(
-        'SELECT cve_id, modified_date FROM cve_core WHERE cve_id = $1',
-        [core.cve_id]
+      // Single upsert — xmax = 0 means inserted, > 0 means updated
+      const result = await pool.query(
+        `INSERT INTO cve_core (
+           cve_id, published_date, modified_date, description,
+           cvss_base, cvss_vector, cvss_version, cwe_id,
+           patch_available, attack_vector, privileges_required,
+           user_interaction, scope, source_updated
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         ON CONFLICT (cve_id) DO UPDATE SET
+           modified_date        = EXCLUDED.modified_date,
+           description          = EXCLUDED.description,
+           cvss_base            = EXCLUDED.cvss_base,
+           cvss_vector          = EXCLUDED.cvss_vector,
+           cvss_version         = EXCLUDED.cvss_version,
+           cwe_id               = EXCLUDED.cwe_id,
+           patch_available      = EXCLUDED.patch_available,
+           attack_vector        = EXCLUDED.attack_vector,
+           privileges_required  = EXCLUDED.privileges_required,
+           user_interaction     = EXCLUDED.user_interaction,
+           scope                = EXCLUDED.scope,
+           source_updated       = EXCLUDED.source_updated
+         WHERE cve_core.modified_date IS DISTINCT FROM EXCLUDED.modified_date
+         RETURNING (xmax = 0) AS is_insert`,
+        [
+          core.cve_id, core.published_date, core.modified_date,
+          core.description, core.cvss_base, core.cvss_vector,
+          core.cvss_version, core.cwe_id, core.patch_available,
+          core.attack_vector, core.privileges_required,
+          core.user_interaction, core.scope, core.source_updated
+        ]
       );
 
-      if (existing.rows.length === 0) {
-        // Insert new
-        await pool.query(
-          `INSERT INTO cve_core (
-             cve_id, published_date, modified_date, description,
-             cvss_base, cvss_vector, cvss_version, cwe_id,
-             patch_available, attack_vector, privileges_required,
-             user_interaction, scope, source_updated
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-          [
-            core.cve_id, core.published_date, core.modified_date,
-            core.description, core.cvss_base, core.cvss_vector,
-            core.cvss_version, core.cwe_id, core.patch_available,
-            core.attack_vector, core.privileges_required,
-            core.user_interaction, core.scope, core.source_updated
-          ]
-        );
-        inserted++;
-      } else {
-        // Only update if modified date is newer
-        const existingDate = existing.rows[0].modified_date;
-        if (!existingDate || core.modified_date > existingDate.toISOString().split('T')[0]) {
-          await pool.query(
-            `UPDATE cve_core SET
-               modified_date = $2, description = $3,
-               cvss_base = $4, cvss_vector = $5, cvss_version = $6,
-               cwe_id = $7, patch_available = $8, attack_vector = $9,
-               privileges_required = $10, user_interaction = $11,
-               scope = $12, source_updated = $13
-             WHERE cve_id = $1`,
-            [
-              core.cve_id, core.modified_date, core.description,
-              core.cvss_base, core.cvss_vector, core.cvss_version,
-              core.cwe_id, core.patch_available, core.attack_vector,
-              core.privileges_required, core.user_interaction,
-              core.scope, core.source_updated
-            ]
-          );
+      if (result.rows.length > 0) {
+        if (result.rows[0].is_insert) {
+          inserted++;
+        } else {
           updated++;
-
           // Refresh CPEs for updated CVEs
           await pool.query('DELETE FROM cve_cpe WHERE cve_id = $1', [core.cve_id]);
-        } else {
-          continue; // No change needed
         }
       }
+      // If no rows returned, record was unchanged — skip CPE insert
 
-      // Insert CPEs
-      for (const cpe of cpes) {
-        const platformTag = getPlatformTag(cpe.vendor, vendorMap);
-        await pool.query(
-          `INSERT INTO cve_cpe (cve_id, cpe_string, vendor, product, version, platform_tag)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [cpe.cve_id, cpe.cpe_string, cpe.vendor, cpe.product, cpe.version, platformTag]
-        );
+      // Insert CPEs for new or updated records only
+      if (result.rows.length > 0 && cpes.length > 0) {
+        for (const cpe of cpes) {
+          const platformTag = getPlatformTag(cpe.vendor, vendorMap);
+          await pool.query(
+            `INSERT INTO cve_cpe (cve_id, cpe_string, vendor, product, version, platform_tag)
+             VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT DO NOTHING`,
+            [cpe.cve_id, cpe.cpe_string, cpe.vendor, cpe.product, cpe.version, platformTag]
+          );
+        }
       }
 
     } catch (err) {
@@ -395,10 +372,7 @@ async function upsertCveBatch(records, vendorMap) {
 // ============================================
 
 async function runNvdIngest() {
-  // Check for delta vs full mode
-  // Delta: last 8 days of changes (daily run)
-  // Full: no date filter (weekly run or first run)
-  const args = process.argv.slice(2);
+  const args     = process.argv.slice(2);
   const fullMode = args.includes('--full');
 
   console.log(`\n[NVD] Starting ${fullMode ? 'FULL' : 'DELTA'} ingest — ${new Date().toISOString()}`);
@@ -409,25 +383,16 @@ async function runNvdIngest() {
   const logId = await logStart();
   await setLock(true);
 
-  const counts = {
-    status:   'failed',
-    fetched:  0,
-    inserted: 0,
-    updated:  0,
-    failed:   0,
-    error:    null,
-  };
+  const counts = { status: 'failed', fetched: 0, inserted: 0, updated: 0, failed: 0, error: null };
 
   try {
-    // Load vendor map for platform tagging
     console.log('  Loading vendor map...');
     const vendorMap = await loadVendorMap();
     console.log(`  Loaded ${vendorMap.size} vendor patterns`);
 
-    // Build URL
+    // Build API URL
     let baseUrl = 'https://services.nvd.nist.gov/rest/json/cves/2.0?';
     if (!fullMode) {
-      // Delta: changes in last 8 days
       const endDate   = new Date();
       const startDate = new Date();
       startDate.setDate(startDate.getDate() - 8);
@@ -437,40 +402,35 @@ async function runNvdIngest() {
       baseUrl += 'noRejected';
     }
 
-    // Fetch all pages
-    console.log(`  Fetching from NVD API...`);
+    console.log('  Fetching from NVD API...');
     const vulnerabilities = await fetchAllPages(baseUrl);
     counts.fetched = vulnerabilities.length;
     console.log(`  Fetched ${vulnerabilities.length} CVEs total`);
 
-    if (vulnerabilities.length === 0 && !fullMode) {
-      console.log('  No changes in delta window — nothing to do');
+    if (vulnerabilities.length === 0) {
+      console.log('  No CVEs in window — nothing to do');
       counts.status = 'success';
       await logComplete(logId, counts);
       await setLock(false);
       return;
     }
 
-    // Transform
     console.log('  Transforming CVE records...');
     const records = vulnerabilities.map(transformCve);
 
-    // Load in batches of 500
     console.log('  Upserting CVE records...');
     const batchSize = 500;
     for (let i = 0; i < records.length; i += batchSize) {
-      const batch = records.slice(i, i + batchSize);
+      const batch  = records.slice(i, i + batchSize);
       const result = await upsertCveBatch(batch, vendorMap);
       counts.inserted += result.inserted;
       counts.updated  += result.updated;
       counts.failed   += result.failed;
-
       if (i % 5000 === 0 && i > 0) {
         console.log(`  Progress: ${i}/${records.length} CVEs processed...`);
       }
     }
 
-    // Save a record of what we fetched
     const rawPath = path.join(RAW_PATH, `nvd_${fullMode ? 'full' : 'delta'}_latest.json`);
     fs.writeFileSync(rawPath, JSON.stringify({ count: vulnerabilities.length, timestamp: new Date() }));
 
