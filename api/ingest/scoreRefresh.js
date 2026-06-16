@@ -83,13 +83,13 @@ function calcAttackVectorModifier(attackVector) {
 
 function calcPreKevScore(epssScore, delta7d, exploitAvailable, cvssBase, attackVector, daysSincePublished, patchAvailable) {
   let score = 0;
-  if (epssScore > 0.4)          score += 2;
-  if (delta7d > 0.2)            score += 2;
-  if (exploitAvailable)         score += 2;
-  if (cvssBase > 7.0)           score += 1;
+  if (epssScore > 0.4)            score += 2;
+  if (delta7d > 0.2)              score += 2;
+  if (exploitAvailable)           score += 2;
+  if (cvssBase > 7.0)             score += 1;
   if (attackVector === 'network') score += 1;
-  if (daysSincePublished > 14)  score += 1;
-  if (!patchAvailable)          score += 1;
+  if (daysSincePublished > 14)    score += 1;
+  if (!patchAvailable)            score += 1;
   return score;
 }
 
@@ -107,7 +107,7 @@ function calculateScore(cve) {
     cvssPoints + epssPoints + velocityPoints + kevPoints + exploitPoints + patchPoints
   );
 
-  const avModifier = calcAttackVectorModifier(cve.attack_vector);
+  const avModifier    = calcAttackVectorModifier(cve.attack_vector);
   const adjustedScore = Math.min(100, combinedScore * avModifier);
 
   const daysSincePublished = cve.published_date
@@ -127,7 +127,7 @@ function calculateScore(cve) {
     exploit_available:       cve.exploit_available || false,
     epss_pending:            !cve.epss_score,
     attack_vector_modifier:  parseFloat(avModifier.toFixed(2)),
-    cross_platform_modifier: 1.00,  // Applied per-client at query time
+    cross_platform_modifier: 1.00,
     pre_kev_score:           preKevScore,
     pre_kev_flag:            preKevScore >= 5,
   };
@@ -140,8 +140,6 @@ function calculateScore(cve) {
 async function refreshScores() {
   console.log('  Building combined CVE dataset...');
 
-  // Single query joining all signal sources
-  // Use DISTINCT ON cve_id for epss to get latest snapshot
   const result = await pool.query(`
     SELECT
       c.cve_id,
@@ -181,20 +179,31 @@ async function writeScoresBulk(rows) {
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
 
-    // Build temp table values
     const values = [];
     const params = [];
     let p = 1;
 
     for (const row of chunk) {
       const score = calculateScore(row);
-      values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      // Explicit casts on first row so PostgreSQL knows the types
+      // for subsequent rows in the same VALUES clause
+      if (values.length === 0) {
+        values.push(
+          `($${p++}::text, $${p++}::numeric, $${p++}::numeric,` +
+          ` $${p++}::numeric, $${p++}::numeric,` +
+          ` $${p++}::boolean, $${p++}::boolean, $${p++}::boolean,` +
+          ` $${p++}::numeric, $${p++}::numeric,` +
+          ` $${p++}::integer, $${p++}::boolean)`
+        );
+      } else {
+        values.push(`($${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++},$${p++})`);
+      }
       params.push(
         row.cve_id,
         score.combined_score,
         score.adjusted_score,
-        row.epss_delta_1d || null,
-        row.epss_delta_7d || null,
+        row.epss_delta_1d  || null,
+        row.epss_delta_7d  || null,
         score.kev_member,
         score.exploit_available,
         score.epss_pending,
@@ -216,11 +225,18 @@ async function writeScoresBulk(rows) {
           score_updated
         )
         SELECT
-          cve_id, combined_score, adjusted_score,
-          epss_delta_1d, epss_delta_7d,
-          kev_member, exploit_available, epss_pending,
-          attack_vector_modifier, cross_platform_modifier,
-          pre_kev_score, pre_kev_flag,
+          cve_id,
+          combined_score::numeric,
+          adjusted_score::numeric,
+          epss_delta_1d::numeric,
+          epss_delta_7d::numeric,
+          kev_member::boolean,
+          exploit_available::boolean,
+          epss_pending::boolean,
+          attack_vector_modifier::numeric,
+          cross_platform_modifier::numeric,
+          pre_kev_score::integer,
+          pre_kev_flag::boolean,
           NOW()
         FROM (
           VALUES ${values.join(',')}
@@ -277,9 +293,8 @@ async function runScoreRefresh() {
     const result = await writeScoresBulk(rows);
     counts.updated = result.updated;
     counts.failed  = result.failed;
-    counts.status  = 'success';
+    counts.status  = result.failed === 0 ? 'success' : 'partial';
 
-    // Summary stats
     const stats = await pool.query(`
       SELECT
         COUNT(*) FILTER (WHERE adjusted_score >= 75) AS critical,
@@ -292,7 +307,7 @@ async function runScoreRefresh() {
     `);
 
     const s = stats.rows[0];
-    console.log(`\n[SCORE] Complete — ${counts.updated} scores calculated`);
+    console.log(`\n[SCORE] Complete — ${counts.updated} scores calculated, ${counts.failed} failed`);
     console.log(`  CRITICAL: ${s.critical}`);
     console.log(`  HIGH:     ${s.high}`);
     console.log(`  MEDIUM:   ${s.medium}`);
