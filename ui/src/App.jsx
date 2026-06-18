@@ -4,6 +4,7 @@ import Login from './pages/Login.jsx'
 import AppShell from './components/layout/AppShell.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import CveList from './pages/CveList.jsx'
+import CveDetail from './pages/CveDetail.jsx'
 
 function PrivateRoute({ children }) {
   return isAuthenticated() ? children : <Navigate to="/login" replace />
@@ -22,6 +23,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="cves" element={<CveList />} />
+          <Route path="cves/:cveId" element={<CveDetail />} />
         </Route>
       </Routes>
     </BrowserRouter>
