@@ -17,10 +17,17 @@ import { errorHandler } from './middleware/errorHandler.js';
 dotenv.config();
 
 const app  = express();
-const PORT = process.env.API_PORT || 3002;
+const PORT = process.env.API_PORT || 4000;
+const HOST = '0.0.0.0';  // Listen on all interfaces
 
 app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:5174' }));
+app.use(cors({
+  origin: [
+    'http://localhost:5174',
+    'http://192.168.0.86:5174',
+    process.env.CORS_ORIGIN
+  ].filter(Boolean)
+}));
 app.use(express.json());
 app.use(requestLogger);
 
@@ -51,8 +58,8 @@ app.use((req, res) => {
 
 app.use(errorHandler);
 
-app.listen(PORT, () => {
-  console.log(`CVE Intel API running on port ${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`CVE Intel API running on ${HOST}:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
