@@ -1,8 +1,9 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getPosture, getDashboard } from '../api/posture.js'
 import { getClientId } from '../store/authStore.js'
 import { formatDate } from '../utils/formatters.js'
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+import { PieChart, Pie, Cell } from 'recharts'
 
 const mono = { fontFamily: 'JetBrains Mono, monospace' }
 
@@ -38,8 +39,9 @@ function ActionRow({ dot, label, desc, bg }) {
 }
 
 export default function ExecutiveReport() {
-  const clientId = getClientId()
-  const today    = new Date().toISOString().split('T')[0]
+  const clientId     = getClientId()
+  const today        = new Date().toISOString().split('T')[0]
+  const [mode, setMode] = useState('executive')
 
   const { data: posture, isLoading: pLoading } = useQuery({
     queryKey: ['posture', clientId],
@@ -50,8 +52,6 @@ export default function ExecutiveReport() {
     queryKey: ['dashboard', clientId],
     queryFn:  () => getDashboard(clientId)
   })
-
-  const [mode, setMode] = React.useState('executive')
 
   if (pLoading || dLoading) return <div style={{ ...mono, color: '#666', padding: '2rem' }}>Generating report...</div>
 
@@ -87,15 +87,12 @@ export default function ExecutiveReport() {
       {/* EXECUTIVE MODE */}
       {mode === 'executive' && (
         <div style={{ background: '#fff', color: '#1a1a1a', borderRadius: '12px', padding: '2rem', border: '0.5px solid #e5e5e5' }}>
-
-          {/* Report header */}
           <div style={{ textAlign: 'center', marginBottom: '2rem', paddingBottom: '1.5rem', borderBottom: '1px solid #e5e5e5' }}>
             <div style={{ fontSize: '11px', color: '#888', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '1px' }}>Cybersecurity Risk Summary</div>
             <div style={{ fontSize: '22px', fontWeight: 600, color: '#1a1a1a', marginBottom: '4px' }}>Security Intelligence Report</div>
             <div style={{ fontSize: '12px', color: '#888' }}>Generated {today} · Powered by CVE///INTEL</div>
           </div>
 
-          {/* Top KPIs */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '1.5rem' }}>
             <ExecKpi
               num={overallRisk}
@@ -117,7 +114,6 @@ export default function ExecutiveReport() {
             />
           </div>
 
-          {/* Top threats plain English */}
           <Section title="Top threats requiring attention">
             {dash.top_critical.slice(0, 3).map((cve, i) => (
               <div key={cve.cve_id} style={{ display: 'flex', gap: '12px', padding: '12px', background: '#fafafa', borderRadius: '8px', marginBottom: '8px' }}>
@@ -137,7 +133,6 @@ export default function ExecutiveReport() {
             ))}
           </Section>
 
-          {/* Recommended actions */}
           <Section title="Recommended actions">
             {parseInt(posture.kev_total) > 0 && (
               <ActionRow dot="#E24B4A" bg="#FCEBEB"
@@ -157,7 +152,6 @@ export default function ExecutiveReport() {
             />
           </Section>
 
-          {/* Distribution chart */}
           <Section title="Vulnerability distribution">
             <div style={{ display: 'flex', alignItems: 'center', gap: '2rem' }}>
               <PieChart width={180} height={180}>
@@ -182,7 +176,6 @@ export default function ExecutiveReport() {
             </div>
           </Section>
 
-          {/* Footer */}
           <div style={{ textAlign: 'center', paddingTop: '1rem', borderTop: '1px solid #e5e5e5', fontSize: '11px', color: '#aaa' }}>
             CVE///INTEL · Data sourced from NVD, CISA KEV, EPSS · {today}
           </div>
@@ -197,7 +190,6 @@ export default function ExecutiveReport() {
             <div style={{ ...mono, fontSize: '11px', color: '#666', marginTop: '2px' }}>Generated {today}</div>
           </div>
 
-          {/* Technical KPI grid */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '1.25rem' }}>
             {[
               { label: 'Critical',  value: posture.critical,      color: '#E24B4A' },
@@ -212,10 +204,9 @@ export default function ExecutiveReport() {
             ))}
           </div>
 
-          {/* Top critical CVEs */}
           <div style={{ marginBottom: '1.25rem' }}>
             <div style={{ ...mono, fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Top critical CVEs</div>
-            {dash.top_critical.map((cve, i) => (
+            {dash.top_critical.map((cve) => (
               <div key={cve.cve_id} style={{ padding: '10px 14px', background: '#1a1a1a', borderRadius: '8px', marginBottom: '6px', display: 'grid', gridTemplateColumns: '120px 1fr auto auto', gap: '12px', alignItems: 'center' }}>
                 <span style={{ ...mono, fontSize: '11px', color: '#5b9bd5' }}>{cve.cve_id}</span>
                 <span style={{ fontSize: '12px', color: '#888' }}>{cve.description?.slice(0, 70)}...</span>
@@ -227,7 +218,6 @@ export default function ExecutiveReport() {
             ))}
           </div>
 
-          {/* Platform breakdown */}
           <div>
             <div style={{ ...mono, fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Platform exposure</div>
             {dash.platforms.map(p => (
