@@ -10,14 +10,18 @@ export default function AppShell() {
   }
 
   return (
-    <div className="min-h-screen" style={{ background: 'var(--color-background-primary, #0f0f0f)', color: 'var(--color-text-primary, #e5e5e5)' }}>
-      <nav style={{ borderBottom: '0.5px solid #2a2a2a', padding: '0 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '48px' }}>
+    <div className="min-h-screen" style={{ background: '#0a0a0a', color: '#e5e5e5' }}>
+      <nav style={{ borderBottom: '0.5px solid #1a1a1a', padding: '0 1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: '48px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '14px', fontWeight: 500, color: '#e5e5e5' }}>
             CVE<span style={{ color: '#E24B4A' }}>///</span>INTEL
           </span>
           <div style={{ display: 'flex', gap: '4px' }}>
-            {[['Dashboard', '/dashboard'], ['CVEs', '/cves']].map(([label, path]) => (
+            {[
+              ['Dashboard', '/dashboard'],
+              ['CVEs',      '/cves'],
+              ['Report',    '/report'],
+            ].map(([label, path]) => (
               <NavLink key={path} to={path} style={({ isActive }) => ({
                 padding: '4px 10px',
                 borderRadius: '6px',
@@ -25,12 +29,12 @@ export default function AppShell() {
                 fontFamily: 'JetBrains Mono, monospace',
                 textDecoration: 'none',
                 background: isActive ? '#1a1a1a' : 'transparent',
-                color: isActive ? '#e5e5e5' : '#888',
+                color: isActive ? '#e5e5e5' : '#666',
               })}>{label}</NavLink>
             ))}
           </div>
         </div>
-        <button onClick={handleLogout} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: '#888', background: 'none', border: 'none', cursor: 'pointer' }}>
+        <button onClick={handleLogout} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: '#555', background: 'none', border: 'none', cursor: 'pointer' }}>
           logout
         </button>
       </nav>
