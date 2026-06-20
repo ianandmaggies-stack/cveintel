@@ -1,7 +1,7 @@
 #!/bin/bash
 # CVE Intel — Cron wrapper
 # Called by cron, handles logging and lock checking
-# Usage: /home/cve/cveintel/cron.sh {kev|epss|nvd|scores|daily}
+# Usage: /home/cve/cveintel/cron.sh {kev|epss|nvd|exploits|scores|daily|weekly}
 
 ROOT="/home/cve/cveintel"
 API="$ROOT/api"
@@ -11,19 +11,18 @@ DATE=$(date '+%Y%m%d_%H%M%S')
 
 mkdir -p $LOG_DIR
 
-# Ensure PostgreSQL is running before any ingest
+# Ensure PostgreSQL is running
 if ! systemctl is-active --quiet postgresql@16-main; then
   echo "[$TIMESTAMP] PostgreSQL not running, starting..." >> $LOG_DIR/cron.log
   sudo systemctl start postgresql@16-main
   sleep 5
 fi
 
-# Check for stuck locks older than 2 hours and clear them
+# Clear locks older than 2 hours
 psql -U cveintel_user -d cveintel -h localhost -c \
   "UPDATE ingest_log
    SET status='failed', error_message='Cleared by cron - exceeded 2 hour timeout', completed_at=NOW()
-   WHERE status='running'
-   AND started_at < NOW() - INTERVAL '2 hours';
+   WHERE status='running' AND started_at < NOW() - INTERVAL '2 hours';
    UPDATE ingest_status SET is_running=FALSE, started_at=NULL
    WHERE is_running=TRUE AND started_at < NOW() - INTERVAL '2 hours';" \
   >> $LOG_DIR/cron.log 2>&1
@@ -43,7 +42,6 @@ function run_job() {
     echo "[$TIMESTAMP] $JOB FAILED - see $LOG_FILE" >> $LOG_DIR/cron.log
   fi
 
-  # Keep only last 14 days of logs
   find $LOG_DIR -name "*.log" -mtime +14 -delete 2>/dev/null
 }
 
@@ -57,11 +55,14 @@ case "$1" in
   nvd)
     run_job "nvd" "ingest/nvd.js" ""
     ;;
+  exploits)
+    run_job "exploits" "ingest/exploits.js" ""
+    ;;
   scores)
     run_job "score_refresh" "ingest/scoreRefresh.js" ""
     ;;
   daily)
-    # Full daily sequence
+    # Daily sequence - fast jobs
     echo "[$TIMESTAMP] Starting daily ingest sequence" >> $LOG_DIR/cron.log
     run_job "kev"           "ingest/kev.js"           ""
     run_job "epss"          "ingest/epss.js"          ""
@@ -69,8 +70,18 @@ case "$1" in
     run_job "score_refresh" "ingest/scoreRefresh.js"  ""
     echo "[$TIMESTAMP] Daily ingest sequence complete" >> $LOG_DIR/cron.log
     ;;
+  weekly)
+    # Weekly sequence - includes exploits
+    echo "[$TIMESTAMP] Starting weekly ingest sequence" >> $LOG_DIR/cron.log
+    run_job "kev"           "ingest/kev.js"           ""
+    run_job "epss"          "ingest/epss.js"          ""
+    run_job "nvd"           "ingest/nvd.js"           ""
+    run_job "exploits"      "ingest/exploits.js"      ""
+    run_job "score_refresh" "ingest/scoreRefresh.js"  ""
+    echo "[$TIMESTAMP] Weekly ingest sequence complete" >> $LOG_DIR/cron.log
+    ;;
   *)
-    echo "Usage: $0 {kev|epss|nvd|scores|daily}"
+    echo "Usage: $0 {kev|epss|nvd|exploits|scores|daily|weekly}"
     exit 1
     ;;
 esac
