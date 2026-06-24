@@ -10,6 +10,7 @@ import cveRoutes from './routes/cves.js';
 import alertRoutes from './routes/alerts.js';
 import postureRoutes from './routes/posture.js';
 import adminRoutes from './routes/admin.js';
+import landscapeRoutes from './routes/landscape.js';
 
 import { requestLogger } from './middleware/logger.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -18,7 +19,7 @@ dotenv.config();
 
 const app  = express();
 const PORT = process.env.API_PORT || 4000;
-const HOST = '0.0.0.0';  // Listen on all interfaces
+const HOST = '0.0.0.0';
 
 app.use(helmet());
 app.use(cors({
@@ -41,12 +42,13 @@ const standardLimiter = rateLimit({
 
 app.use('/api/', standardLimiter);
 
-app.use('/api/v1/auth',   authRoutes);
-app.use('/api/v1',        dashboardRoutes);
-app.use('/api/v1',        cveRoutes);
-app.use('/api/v1',        alertRoutes);
-app.use('/api/v1',        postureRoutes);
-app.use('/api/v1/admin',  adminRoutes);
+app.use('/api/v1/auth',      authRoutes);
+app.use('/api/v1',           dashboardRoutes);
+app.use('/api/v1',           cveRoutes);
+app.use('/api/v1',           alertRoutes);
+app.use('/api/v1',           postureRoutes);
+app.use('/api/v1',           landscapeRoutes);
+app.use('/api/v1/admin',     adminRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
