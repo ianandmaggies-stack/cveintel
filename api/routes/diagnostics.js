@@ -4,11 +4,11 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// GET /api/v1/diagnostics
+const STUCK_THRESHOLD_HOURS = 4; // jobs running longer than this are considered stuck
+
 router.get('/diagnostics', requireAuth, async (req, res) => {
   try {
 
-    // Run each query independently so one failure doesn't kill the whole page
     const safe = async (label, fn) => {
       try { return await fn(); }
       catch (e) { console.error(`Diagnostics [${label}]:`, e.message); return null; }
@@ -18,14 +18,15 @@ router.get('/diagnostics', requireAuth, async (req, res) => {
       tableCountsRes,
       ingestStatusRes,
       recentLogsRes,
+      lastSuccessRes,
       snapshotCountRes,
       dbSizeRes,
       tableSizesRes,
+      nvdConnectRes,
     ] = await Promise.all([
 
       safe('table_counts', () => pool.query(`
-        SELECT relname AS table_name,
-               n_live_tup AS row_count
+        SELECT relname AS table_name, n_live_tup AS row_count
         FROM pg_stat_user_tables
         WHERE relname IN (
           'cve_core','cve_epss','cve_kev','cve_score',
@@ -36,7 +37,8 @@ router.get('/diagnostics', requireAuth, async (req, res) => {
       `)),
 
       safe('ingest_status', () => pool.query(`
-        SELECT job_name, is_running, started_at
+        SELECT job_name, is_running, started_at,
+          EXTRACT(EPOCH FROM (NOW() - started_at)) / 3600 AS running_hours
         FROM ingest_status
         ORDER BY job_name
       `)),
@@ -51,16 +53,30 @@ router.get('/diagnostics', requireAuth, async (req, res) => {
         LIMIT 50
       `)),
 
-      safe('snapshot_count', () => pool.query(`
-        SELECT COUNT(*) FROM global_risk_snapshot
+      // Last successful run per job
+      safe('last_success', () => pool.query(`
+        SELECT DISTINCT ON (job_name)
+               job_name,
+               started_at AS last_success_at,
+               completed_at,
+               records_fetched,
+               records_inserted,
+               records_updated,
+               EXTRACT(EPOCH FROM (NOW() - completed_at)) / 3600 AS hours_ago
+        FROM ingest_log
+        WHERE status = 'success'
+        ORDER BY job_name, started_at DESC
       `)),
+
+      safe('snapshot_count', () => pool.query(
+        `SELECT COUNT(*) FROM global_risk_snapshot`
+      )),
 
       safe('db_size', () => pool.query(`
         SELECT pg_size_pretty(pg_database_size(current_database())) AS total_size,
                pg_database_size(current_database()) AS total_bytes
       `)),
 
-      // Table sizes — use to_regclass to avoid errors on missing tables
       safe('table_sizes', () => pool.query(`
         SELECT t.tbl,
                CASE WHEN to_regclass(t.tbl) IS NOT NULL
@@ -73,6 +89,9 @@ router.get('/diagnostics', requireAuth, async (req, res) => {
         ) AS t(tbl)
       `)),
 
+      // Quick connectivity check — just confirm DB is responsive
+      safe('nvd_connect', () => pool.query(`SELECT NOW() AS db_time`)),
+
     ]);
 
     // Pivot logs per job
@@ -82,19 +101,63 @@ router.get('/diagnostics', requireAuth, async (req, res) => {
       if (logsByJob[row.job_name].length < 10) logsByJob[row.job_name].push(row);
     }
 
+    // Last success map
+    const lastSuccessMap = {};
+    for (const row of (lastSuccessRes?.rows || [])) {
+      lastSuccessMap[row.job_name] = row;
+    }
+
+    // Build job health summary
+    const jobHealth = {};
+    for (const s of (ingestStatusRes?.rows || [])) {
+      const lastSuccess = lastSuccessMap[s.job_name] || null;
+      const lastRun     = logsByJob[s.job_name]?.[0]  || null;
+      const runningHours = parseFloat(s.running_hours || 0);
+      const isStuck     = s.is_running && runningHours > STUCK_THRESHOLD_HOURS;
+
+      let healthStatus = 'unknown';
+      if (isStuck) {
+        healthStatus = 'stuck';
+      } else if (s.is_running) {
+        healthStatus = 'running';
+      } else if (!lastRun) {
+        healthStatus = 'never_run';
+      } else if (lastRun.status === 'success') {
+        healthStatus = 'ok';
+      } else if (lastRun.status === 'failed') {
+        healthStatus = 'failed';
+      } else {
+        healthStatus = 'unknown';
+      }
+
+      jobHealth[s.job_name] = {
+        job_name:        s.job_name,
+        is_running:      s.is_running,
+        running_hours:   runningHours,
+        is_stuck:        isStuck,
+        health_status:   healthStatus,  // ok | running | stuck | failed | never_run | unknown
+        last_run:        lastRun,
+        last_success:    lastSuccess,
+        hours_since_success: lastSuccess ? parseFloat(lastSuccess.hours_ago) : null,
+      };
+    }
+
     // Table size map
     const tableSizeMap = {};
     for (const row of (tableSizesRes?.rows || [])) {
       tableSizeMap[row.tbl] = row.size;
     }
 
-    const dbSize = dbSizeRes?.rows[0] || { total_size: 'unknown', total_bytes: 0 };
+    const dbSize   = dbSizeRes?.rows[0]  || { total_size: 'unknown' };
+    const dbOnline = !!nvdConnectRes?.rows[0]?.db_time;
 
     res.json({
       data: {
         generated_at:  new Date().toISOString(),
-        table_counts:  tableCountsRes?.rows  || [],
+        db_online:     dbOnline,
+        table_counts:  tableCountsRes?.rows || [],
         ingest_status: ingestStatusRes?.rows || [],
+        job_health:    jobHealth,
         logs_by_job:   logsByJob,
         snapshot_days: parseInt(snapshotCountRes?.rows[0]?.count || 0),
         db_size: {
