@@ -1,6 +1,7 @@
 import express from 'express';
 import pool from '../db/index.js';
 import { requireAuth } from '../middleware/auth.js';
+import { stripHtml } from '../utils/sanitise.js';
 
 const router = express.Router();
 
@@ -67,8 +68,8 @@ router.get('/clients/:clientId/dashboard', requireAuth, async (req, res) => {
           kev_total:     parseInt(stats.kev_total),
           pre_kev_total: parseInt(stats.pre_kev_total)
         },
-        top_critical: topCritical.rows,
-        trending:     trending.rows,
+        top_critical: topCritical.rows.map(r => ({ ...r, description: stripHtml(r.description) })),
+        trending:     trending.rows.map(r => ({ ...r, description: stripHtml(r.description) })),
         platforms:    platforms.rows
       }
     });

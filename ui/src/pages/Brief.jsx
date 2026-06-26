@@ -5,7 +5,7 @@ import { truncate } from '../utils/formatters.js'
 
 const mono = { fontFamily: 'JetBrains Mono, monospace' }
 
-// ─── Template journalism engine ────────────────────────────────────────────
+// ─── Template journalism engine ───────────────────────────────────────────────
 
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)]
@@ -18,91 +18,115 @@ function getGreeting() {
   return pick(['Good evening', 'Evening', 'You need to know'])
 }
 
-function fmtDelta(n, noun, opts = {}) {
-  if (n === null || n === undefined) return null
-  const { up = 'rose', down = 'dropped', flat = 'unchanged' } = opts
-  if (n === 0) return `${noun} ${flat}`
-  const dir  = n > 0 ? up   : down
-  const abs  = Math.abs(n)
-  return `${noun} ${dir} by ${abs.toLocaleString()}`
+function severity(critical) {
+  if (critical >= 100) return pick(['significantly elevated', 'at a critical level', 'demanding immediate attention'])
+  if (critical >= 50)  return pick(['elevated', 'above the normal threshold', 'at a level worth watching'])
+  if (critical >= 10)  return pick(['moderate', 'manageable but active', 'steady'])
+  return pick(['low', 'relatively quiet', 'within normal range'])
 }
 
 function buildNarrative(data) {
-  const { current, delta, has_history, new_kev, epss_movers, pre_kev, rising_exploits } = data
+  const { current, delta, has_history, new_kev, epss_movers, pre_kev, rising_exploits, active_actors } = data
   const lines = []
 
-  // ── Opener ──
   if (!current) {
     return [{ type: 'lead', text: `${getGreeting()}. No snapshot data yet — run an ingest to populate the brief.` }]
   }
 
-  // ── Lead sentence ──
-  const newCvePhrase = current.new_cves_today > 0
-    ? pick([
-        `${current.new_cves_today.toLocaleString()} new ${current.new_cves_today === 1 ? 'vulnerability was' : 'vulnerabilities were'} published`,
-        `${current.new_cves_today.toLocaleString()} new ${current.new_cves_today === 1 ? 'CVE came' : 'CVEs came'} into view`,
-        `the feed ${current.new_cves_today === 1 ? 'added' : 'brought in'} ${current.new_cves_today.toLocaleString()} new ${current.new_cves_today === 1 ? 'entry' : 'entries'}`,
-      ])
-    : null
+  // ── Lead paragraph ──────────────────────────────────────────────────────────
+  const parts = []
 
-  const critPhrase = has_history && delta
-    ? fmtDelta(delta.critical, 'critical count',  { up: 'climbed', down: 'fell', flat: 'held steady' })
-    : `${current.critical.toLocaleString()} critical ${current.critical === 1 ? 'vulnerability is' : 'vulnerabilities are'} active`
-
-  if (newCvePhrase && critPhrase) {
-    lines.push({ type: 'lead', text: `${getGreeting()}. In the last 24 hours, ${newCvePhrase}. The ${critPhrase}.` })
-  } else if (critPhrase) {
-    lines.push({ type: 'lead', text: `${getGreeting()}. The ${critPhrase}.` })
-  } else {
-    lines.push({ type: 'lead', text: `${getGreeting()}. Here is today's threat summary.` })
+  // New CVEs overnight
+  if (current.new_cves_today > 0) {
+    parts.push(pick([
+      `${current.new_cves_today.toLocaleString()} new ${current.new_cves_today === 1 ? 'vulnerability was' : 'vulnerabilities were'} published in the last 24 hours`,
+      `the vulnerability feed added ${current.new_cves_today.toLocaleString()} new ${current.new_cves_today === 1 ? 'entry' : 'entries'} overnight`,
+    ]))
   }
 
-  // ── KEV additions ──
+  // Critical count — delta or absolute
+  if (has_history && delta?.critical !== null) {
+    const d = delta.critical
+    if (d > 0)  parts.push(`the critical count climbed by ${d} to ${current.critical.toLocaleString()}`)
+    else if (d < 0) parts.push(`the critical count fell by ${Math.abs(d)} to ${current.critical.toLocaleString()}`)
+    else parts.push(`critical vulnerabilities held steady at ${current.critical.toLocaleString()}`)
+  } else {
+    parts.push(`${current.critical.toLocaleString()} critical ${current.critical === 1 ? 'vulnerability is' : 'vulnerabilities are'} currently active`)
+  }
+
+  // KEV additions
+  if (current.new_cves_today > 0 && new_kev?.length > 0) {
+    parts.push(`${new_kev.length} ${new_kev.length === 1 ? 'entry was' : 'entries were'} added to the CISA Known Exploited Vulnerabilities catalogue`)
+  }
+
+  const leadSentence = `${getGreeting()}. ${parts.map((p, i) => i === 0 ? p.charAt(0).toUpperCase() + p.slice(1) : p).join('; ')}. `
+
+  // Threat actor context
+  let actorSentence = ''
+  if (active_actors?.length > 0) {
+    const top = active_actors[0]
+    actorSentence = pick([
+      `The most active tracked threat actor is ${top.display_name}, with ${top.cve_count} mapped ${top.cve_count === 1 ? 'vulnerability' : 'vulnerabilities'} in the intelligence database.`,
+      `${top.display_name} remains the most active tracked actor, linked to ${top.cve_count} known ${top.cve_count === 1 ? 'vulnerability' : 'vulnerabilities'}.`,
+    ])
+  }
+
+  // Posture summary sentence
+  const postureSentence = pick([
+    `The overall threat posture is ${severity(current.critical)}, with ${current.kev_total.toLocaleString()} confirmed exploited ${current.kev_total === 1 ? 'vulnerability' : 'vulnerabilities'} remaining active and ${current.pre_kev_count.toLocaleString()} early-warning ${current.pre_kev_count === 1 ? 'signal' : 'signals'} in view.`,
+    `Across the landscape, ${current.kev_total.toLocaleString()} ${current.kev_total === 1 ? 'vulnerability is' : 'vulnerabilities are'} confirmed as actively exploited in the wild. A further ${current.pre_kev_count.toLocaleString()} ${current.pre_kev_count === 1 ? 'vulnerability carries' : 'vulnerabilities carry'} early signals of imminent exploitation.`,
+  ])
+
+  lines.push({
+    type: 'lead',
+    text: leadSentence + (actorSentence ? actorSentence + ' ' : '') + postureSentence
+  })
+
+  // ── KEV additions ────────────────────────────────────────────────────────────
   if (new_kev?.length > 0) {
     const verb = pick(['confirmed', 'catalogued', 'added'])
     const intro = new_kev.length === 1
-      ? `CISA ${verb} one new actively-exploited vulnerability`
-      : `CISA ${verb} ${new_kev.length} new actively-exploited ${pick(['vulnerabilities', 'entries'])} to the Known Exploited Vulnerabilities catalogue`
-    lines.push({ type: 'kev', heading: 'Known Exploited Vulnerabilities', text: intro + '.', items: new_kev })
+      ? `CISA ${verb} one new actively-exploited vulnerability to its Known Exploited Vulnerabilities catalogue. KEV listing means real-world attacks have been observed.`
+      : `CISA ${verb} ${new_kev.length} new actively-exploited ${pick(['vulnerabilities', 'entries'])} to its Known Exploited Vulnerabilities catalogue this week. Each listing represents a confirmed real-world attack.`
+    lines.push({ type: 'kev', heading: 'Known Exploited Vulnerabilities', text: intro, items: new_kev })
   }
 
-  // ── EPSS movers ──
+  // ── EPSS movers ──────────────────────────────────────────────────────────────
   if (epss_movers?.length > 0) {
     const top = epss_movers[0]
     const pct = (parseFloat(top.epss_delta_7d) * 100).toFixed(1)
     const intro = pick([
-      `Exploitation probability is climbing on ${epss_movers.length} ${epss_movers.length === 1 ? 'vulnerability' : 'vulnerabilities'}.`,
-      `${epss_movers.length} ${epss_movers.length === 1 ? 'vulnerability has' : 'vulnerabilities have'} seen notable rises in exploitation likelihood this week.`,
+      `Exploitation probability is climbing on ${epss_movers.length} ${epss_movers.length === 1 ? 'vulnerability' : 'vulnerabilities'} this week. EPSS measures the likelihood of exploitation in the wild — sharp rises here are an early warning to act before attacks materialise.`,
+      `${epss_movers.length} ${epss_movers.length === 1 ? 'vulnerability has' : 'vulnerabilities have'} seen significant rises in exploitation likelihood over the past 7 days. The sharpest: ${top.cve_id} moved +${pct} percentage points. When EPSS climbs this fast, KEV listing often follows.`,
     ])
-    const detail = `The sharpest move: ${top.cve_id} jumped ${pct} points in 7 days.`
-    lines.push({ type: 'epss', heading: 'Rising Exploitation Probability', text: `${intro} ${detail}`, items: epss_movers })
+    lines.push({ type: 'epss', heading: 'Rising Exploitation Probability', text: intro, items: epss_movers })
   }
 
-  // ── Pre-KEV signals ──
+  // ── Pre-KEV signals ───────────────────────────────────────────────────────────
   if (pre_kev?.length > 0) {
     const intro = pick([
-      `${pre_kev.length} ${pre_kev.length === 1 ? 'vulnerability is' : 'vulnerabilities are'} showing early signals consistent with KEV listing.`,
-      `Our model has flagged ${pre_kev.length} projected KEV ${pre_kev.length === 1 ? 'candidate' : 'candidates'} — watch these.`,
+      `${pre_kev.length} ${pre_kev.length === 1 ? 'vulnerability is' : 'vulnerabilities are'} showing early signals consistent with KEV listing — projected based on exploit availability, EPSS trajectory, and historical patterns. These are not yet confirmed as exploited, but the indicators warrant attention ahead of any official advisory.`,
+      `Our model has flagged ${pre_kev.length} projected KEV ${pre_kev.length === 1 ? 'candidate' : 'candidates'}. These are vulnerabilities where the combination of exploit availability, rising EPSS score, and threat actor behaviour suggests active exploitation is likely before official confirmation arrives. Treat them as early warnings.`,
     ])
     lines.push({ type: 'prekev', heading: 'Projected KEV Candidates', text: intro, items: pre_kev })
   }
 
-  // ── Rising exploits / no patch ──
+  // ── Rising exploits / no patch ───────────────────────────────────────────────
   if (rising_exploits?.length > 0) {
     const intro = pick([
-      `${rising_exploits.length} exploitable ${rising_exploits.length === 1 ? 'vulnerability has' : 'vulnerabilities have'} no patch available — these carry elevated risk until vendors respond.`,
-      `Watch out: ${rising_exploits.length} ${rising_exploits.length === 1 ? 'vulnerability' : 'vulnerabilities'} with known exploits remain unpatched.`,
+      `${rising_exploits.length} exploitable ${rising_exploits.length === 1 ? 'vulnerability has' : 'vulnerabilities have'} no patch available. These carry elevated and sustained risk until vendors respond — network-based exploitation without a patch means exposure cannot be closed through normal remediation channels.`,
+      `Watch: ${rising_exploits.length} ${rising_exploits.length === 1 ? 'vulnerability' : 'vulnerabilities'} with known public exploits remain unpatched. Without a vendor fix available, the only options are compensating controls — network segmentation, access restriction, or temporary service suspension.`,
     ])
-    lines.push({ type: 'exploit', heading: 'Exploitable — No Patch', text: intro, items: rising_exploits })
+    lines.push({ type: 'exploit', heading: 'Exploitable — No Patch Available', text: intro, items: rising_exploits })
   }
 
-  // ── Quiet day fallback ──
+  // ── Quiet day fallback ────────────────────────────────────────────────────────
   if (lines.length === 1) {
     lines.push({
       type: 'quiet',
       text: pick([
-        `No new KEV additions, no sharp EPSS spikes. A steady day — ${current.kev_total.toLocaleString()} known-exploited vulnerabilities remain active.`,
-        `The landscape is stable today. ${current.critical.toLocaleString()} critical vulnerabilities remain in view; no new confirmed exploits were catalogued.`,
+        `No new KEV additions, no sharp EPSS spikes, no newly confirmed exploits without patches. The landscape is stable today — ${current.kev_total.toLocaleString()} known-exploited ${current.kev_total === 1 ? 'vulnerability remains' : 'vulnerabilities remain'} active, and monitoring continues.`,
+        `A steady day in the threat landscape. ${current.critical.toLocaleString()} critical ${current.critical === 1 ? 'vulnerability remains' : 'vulnerabilities remain'} in view, no new confirmed exploits were catalogued, and no EPSS scores moved significantly. Continue standard monitoring.`,
       ])
     })
   }
@@ -110,7 +134,7 @@ function buildNarrative(data) {
   return lines
 }
 
-// ─── Sub-components ────────────────────────────────────────────────────────
+// ─── Sub-components ────────────────────────────────────────────────────────────
 
 function ScorePill({ score }) {
   const band = getBand(score)
@@ -151,7 +175,7 @@ function CveRow({ cve, showEpss }) {
         </div>
       </div>
       <div style={{ display: 'flex', gap: '4px' }}>
-        {cve.kev_member && <Tag bg="#FCEBEB" text="#A32D2D">KEV</Tag>}
+        {cve.kev_member   && <Tag bg="#FCEBEB" text="#A32D2D">KEV</Tag>}
         {cve.exploit_available && <Tag bg="#FAEEDA" text="#854F0B">EXPLOIT</Tag>}
       </div>
       {cve.adjusted_score && <ScorePill score={cve.adjusted_score} />}
@@ -179,19 +203,13 @@ function Section({ block }) {
       marginBottom: '12px',
     }}>
       {block.heading && (
-        <div style={{
-          padding: '8px 14px',
-          borderBottom: '0.5px solid #1a1a1a',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-        }}>
+        <div style={{ padding: '8px 14px', borderBottom: '0.5px solid #1a1a1a' }}>
           <span style={{ ...mono, fontSize: '10px', color: accent.color, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
             {block.heading}
           </span>
         </div>
       )}
-      <div style={{ padding: '12px 14px', fontSize: '13px', color: '#aaa', lineHeight: 1.65 }}>
+      <div style={{ padding: '12px 14px', fontSize: '13px', color: '#aaa', lineHeight: 1.75 }}>
         {block.text}
       </div>
       {block.items?.length > 0 && (
@@ -233,7 +251,7 @@ function StatPill({ label, value, delta, color }) {
   )
 }
 
-// ─── Main page ─────────────────────────────────────────────────────────────
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Brief() {
   const { data, isLoading, error } = useQuery({
@@ -266,15 +284,16 @@ export default function Brief() {
         <div style={{ ...mono, fontSize: '11px', color: '#444', marginTop: '2px' }}>{today}</div>
       </div>
 
-      {/* Lead narrative — first block always plain text */}
+      {/* Lead paragraph */}
       <div style={{
-        fontSize: '15px',
-        lineHeight: 1.75,
-        color: '#ccc',
+        fontSize: '14px',
+        lineHeight: 1.85,
+        color: '#bbb',
         marginBottom: '1.75rem',
         paddingBottom: '1.5rem',
         borderBottom: '0.5px solid #1a1a1a',
         fontWeight: 300,
+        maxWidth: '720px',
       }}>
         {narrative[0]?.text}
       </div>
@@ -282,9 +301,9 @@ export default function Brief() {
       {/* Stat strip */}
       {current && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '1.5rem' }}>
-          <StatPill label="Critical"    value={current.critical}      delta={delta?.critical} color="#E24B4A" />
-          <StatPill label="KEV Active"  value={current.kev_total}     delta={delta?.kev}      color="#E24B4A" />
-          <StatPill label="Pre-KEV"     value={current.pre_kev_count} delta={delta?.pre_kev}  color="#534AB7" />
+          <StatPill label="Critical"     value={current.critical}      delta={delta?.critical} color="#E24B4A" />
+          <StatPill label="KEV Active"   value={current.kev_total}     delta={delta?.kev}      color="#E24B4A" />
+          <StatPill label="Pre-KEV"      value={current.pre_kev_count} delta={delta?.pre_kev}  color="#534AB7" />
           <StatPill label="With Exploit" value={current.exploit_count} delta={null}            color="#BA7517" />
         </div>
       )}
@@ -295,7 +314,7 @@ export default function Brief() {
       ))}
 
       {/* Footer */}
-      <div style={{ ...mono, fontSize: '10px', color: '#2a2a2a', marginTop: '2rem', textAlign: 'right' }}>
+      <div style={{ ...mono, fontSize: '10px', color: '#222', marginTop: '2rem', textAlign: 'right' }}>
         CVE /// INTEL · Brief refreshes every 10 minutes
       </div>
 

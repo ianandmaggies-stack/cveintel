@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
 import pool from '../db/index.js';
+import { stripHtml } from '../utils/sanitise.js';
 
 dotenv.config();
 
@@ -218,7 +219,8 @@ function extractCwe(cve) {
 function extractDescription(cve) {
   const descs = cve.descriptions || [];
   const en = descs.find(d => d.lang === 'en');
-  return en?.value || null;
+  // Strip any HTML that NVD occasionally includes in descriptions
+  return stripHtml(en?.value || null);
 }
 
 function extractCpes(cveId, configurations) {
@@ -302,7 +304,6 @@ async function upsertCveBatch(records, vendorMap) {
 
   for (const { core, cpes } of records) {
     try {
-      // Single upsert — xmax = 0 means inserted, > 0 means updated
       const result = await pool.query(
         `INSERT INTO cve_core (
            cve_id, published_date, modified_date, description,
@@ -339,13 +340,10 @@ async function upsertCveBatch(records, vendorMap) {
           inserted++;
         } else {
           updated++;
-          // Refresh CPEs for updated CVEs
           await pool.query('DELETE FROM cve_cpe WHERE cve_id = $1', [core.cve_id]);
         }
       }
-      // If no rows returned, record was unchanged — skip CPE insert
 
-      // Insert CPEs for new or updated records only
       if (result.rows.length > 0 && cpes.length > 0) {
         for (const cpe of cpes) {
           const platformTag = getPlatformTag(cpe.vendor, vendorMap);
@@ -390,7 +388,6 @@ async function runNvdIngest() {
     const vendorMap = await loadVendorMap();
     console.log(`  Loaded ${vendorMap.size} vendor patterns`);
 
-    // Build API URL
     let baseUrl = 'https://services.nvd.nist.gov/rest/json/cves/2.0?';
     if (!fullMode) {
       const endDate   = new Date();
