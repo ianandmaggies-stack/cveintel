@@ -18,10 +18,11 @@ export default function AppShell() {
           </span>
           <div style={{ display: 'flex', gap: '4px' }}>
             {[
-              ['Dashboard',  '/dashboard'],
-              ['CVEs',       '/cves'],
-              ['Landscape',  '/landscape'],
-              ['Report',     '/report'],
+              ['Brief',     '/brief'],
+              ['Dashboard', '/dashboard'],
+              ['CVEs',      '/cves'],
+              ['Landscape', '/landscape'],
+              ['Report',    '/report'],
             ].map(([label, path]) => (
               <NavLink key={path} to={path} style={({ isActive }) => ({
                 padding: '4px 10px',

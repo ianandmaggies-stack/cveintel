@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { isAuthenticated } from './store/authStore.js'
 import Login from './pages/Login.jsx'
 import AppShell from './components/layout/AppShell.jsx'
+import Brief from './pages/Brief.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import CveList from './pages/CveList.jsx'
 import CveDetail from './pages/CveDetail.jsx'
@@ -22,12 +23,13 @@ export default function App() {
             <AppShell />
           </PrivateRoute>
         }>
-          <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard"  element={<Dashboard />} />
-          <Route path="cves"       element={<CveList />} />
+          <Route index element={<Navigate to="/brief" replace />} />
+          <Route path="brief"       element={<Brief />} />
+          <Route path="dashboard"   element={<Dashboard />} />
+          <Route path="cves"        element={<CveList />} />
           <Route path="cves/:cveId" element={<CveDetail />} />
-          <Route path="report"     element={<ExecutiveReport />} />
-          <Route path="landscape"  element={<ThreatLandscape />} />
+          <Route path="report"      element={<ExecutiveReport />} />
+          <Route path="landscape"   element={<ThreatLandscape />} />
         </Route>
       </Routes>
     </BrowserRouter>
