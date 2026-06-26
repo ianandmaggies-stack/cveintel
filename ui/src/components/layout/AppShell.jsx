@@ -18,11 +18,11 @@ export default function AppShell() {
           </span>
           <div style={{ display: 'flex', gap: '4px' }}>
             {[
-              ['Brief',     '/brief'],
-              ['Dashboard', '/dashboard'],
-              ['CVEs',      '/cves'],
-              ['Landscape', '/landscape'],
-              ['Report',    '/report'],
+              ['Brief',       '/brief'],
+              ['Dashboard',   '/dashboard'],
+              ['CVEs',        '/cves'],
+              ['Landscape',   '/landscape'],
+              ['Report',      '/report'],
             ].map(([label, path]) => (
               <NavLink key={path} to={path} style={({ isActive }) => ({
                 padding: '4px 10px',
@@ -36,9 +36,26 @@ export default function AppShell() {
             ))}
           </div>
         </div>
-        <button onClick={handleLogout} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: '#555', background: 'none', border: 'none', cursor: 'pointer' }}>
-          logout
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {[
+            ['About',       '/about'],
+            ['Diagnostics', '/diagnostics'],
+          ].map(([label, path]) => (
+            <NavLink key={path} to={path} style={({ isActive }) => ({
+              padding: '4px 10px',
+              borderRadius: '6px',
+              fontSize: '11px',
+              fontFamily: 'JetBrains Mono, monospace',
+              textDecoration: 'none',
+              background: isActive ? '#1a1a1a' : 'transparent',
+              color: isActive ? '#888' : '#3a3a3a',
+            })}>{label}</NavLink>
+          ))}
+          <span style={{ color: '#2a2a2a', fontSize: '12px' }}>|</span>
+          <button onClick={handleLogout} style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', color: '#3a3a3a', background: 'none', border: 'none', cursor: 'pointer' }}>
+            logout
+          </button>
+        </div>
       </nav>
       <main style={{ padding: '1.5rem' }}>
         <Outlet />

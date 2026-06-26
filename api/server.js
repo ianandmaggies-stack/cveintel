@@ -12,6 +12,7 @@ import postureRoutes from './routes/posture.js';
 import adminRoutes from './routes/admin.js';
 import landscapeRoutes from './routes/landscape.js';
 import briefRoutes from './routes/brief.js';
+import diagnosticsRoutes from './routes/diagnostics.js';
 
 import { requestLogger } from './middleware/logger.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -50,6 +51,7 @@ app.use('/api/v1',       alertRoutes);
 app.use('/api/v1',       postureRoutes);
 app.use('/api/v1',       landscapeRoutes);
 app.use('/api/v1',       briefRoutes);
+app.use('/api/v1',       diagnosticsRoutes);
 app.use('/api/v1/admin', adminRoutes);
 
 app.get('/health', (req, res) => {
