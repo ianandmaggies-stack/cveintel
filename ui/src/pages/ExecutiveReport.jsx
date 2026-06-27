@@ -6,15 +6,97 @@ import { PieChart, Pie, Cell } from 'recharts'
 
 const mono = { fontFamily: 'JetBrains Mono, monospace' }
 
-// Dark theme tokens
 const D = {
-  bg:        '#111',
-  bg2:       '#1a1a1a',
-  bg3:       '#222',
-  border:    '#2a2a2a',
-  text:      '#e5e5e5',
-  textMuted: '#888',
-  textDim:   '#555',
+  bg: '#111', bg2: '#1a1a1a', bg3: '#222',
+  border: '#2a2a2a', text: '#e5e5e5',
+  textMuted: '#888', textDim: '#555',
+}
+
+// -----------------------------------------------
+// Why it matters — data-driven contextual framing
+// -----------------------------------------------
+
+function buildWhyItMatters(posture, topCritical) {
+  const kev      = parseInt(posture.kev_total     || 0)
+  const critical = parseInt(posture.critical      || 0)
+  const preKev   = parseInt(posture.pre_kev_total || 0)
+  const high     = parseInt(posture.high          || 0)
+  const medium   = parseInt(posture.medium        || 0)
+
+  const points = []
+
+  // KEV — most urgent signal
+  if (kev > 0) {
+    const urgency = kev > 100
+      ? `This is a high volume — prioritise by EPSS score and patch availability.`
+      : kev > 20
+      ? `Focus on those with no patch available first.`
+      : `These should be your immediate priority this week.`
+    points.push({
+      color:   '#E24B4A',
+      bg:      '#1f0a0a',
+      heading: `${kev} vulnerabilities are confirmed as actively exploited right now`,
+      body:    `The US Government's CISA agency maintains a catalogue of vulnerabilities being used in real attacks today. Appearing on this list means attackers have working tools and are using them. ${urgency}`,
+    })
+  }
+
+  // Critical with no patch
+  const unpatchedCritical = topCritical?.filter(c => !c.patch_available && c.adjusted_score >= 75).length || 0
+  if (unpatchedCritical > 0) {
+    points.push({
+      color:   '#E24B4A',
+      bg:      '#1a0a0a',
+      heading: `${unpatchedCritical} critical ${unpatchedCritical === 1 ? 'vulnerability has' : 'vulnerabilities have'} no patch available`,
+      body:    `When a critical vulnerability has no vendor fix, the only options are compensating controls — restricting network access, disabling affected services, or increased monitoring. These cannot be closed through standard patching and require manual intervention.`,
+    })
+  }
+
+  // Pre-KEV early warning
+  if (preKev > 0) {
+    const preKevUrgency = preKev > 500
+      ? `Review the highest-scoring candidates — those above 7 on the pre-KEV scale — first.`
+      : `These are worth reviewing now, before they become urgent.`
+    points.push({
+      color:   '#BA7517',
+      bg:      '#1a1000',
+      heading: `${preKev.toLocaleString()} vulnerabilities show early warning signals of imminent exploitation`,
+      body:    `CVE Intel tracks exploitation probability trends before official confirmation. These vulnerabilities have rising EPSS scores, available exploits, and patterns consistent with how previous KEV entries behaved before listing. ${preKevUrgency}`,
+    })
+  }
+
+  // The green donut problem — explain why low doesn't mean safe
+  const total   = kev + critical + high + medium + parseInt(posture.low || 0)
+  const lowPct  = total > 0 ? ((parseInt(posture.low || 0) / total) * 100).toFixed(0) : 0
+  if (lowPct > 50) {
+    points.push({
+      color:   '#555',
+      bg:      D.bg2,
+      heading: `${lowPct}% low severity does not mean low risk`,
+      body:    `Low severity ratings reflect technical complexity of exploitation, not business impact. A low-severity vulnerability in a critical system — payroll, customer data, infrastructure — can have severe consequences. Severity ratings should be combined with context about which systems are affected.`,
+    })
+  }
+
+  // High count context
+  if (high > 500) {
+    points.push({
+      color:   '#BA7517',
+      bg:      '#1a1000',
+      heading: `${high.toLocaleString()} high-severity vulnerabilities require a structured remediation plan`,
+      body:    `High severity vulnerabilities are serious but typically require more steps to exploit than critical ones. They should be scheduled for remediation within 30 days. Without a systematic approach, high-severity backlogs grow faster than teams can address them.`,
+    })
+  }
+
+  // Fallback if nothing urgent
+  if (points.length === 0) {
+    points.push({
+      color:   '#1D9E75',
+      bg:      '#0a1a10',
+      heading: 'No immediate critical action required',
+      body:    `Current vulnerability posture is within normal operational parameters. Continue standard monitoring cadence and ensure patching schedules are maintained.`,
+    })
+  }
+
+  return points
 }
 
 function Section({ title, children }) {
@@ -48,6 +130,26 @@ function ActionRow({ dot, label, desc, bg }) {
   )
 }
 
+function WhyItMattersPoint({ point }) {
+  return (
+    <div style={{
+      background:   point.bg,
+      border:       `0.5px solid ${point.color}33`,
+      borderLeft:   `3px solid ${point.color}`,
+      borderRadius: '8px',
+      padding:      '14px 16px',
+      marginBottom: '10px',
+    }}>
+      <div style={{ fontSize: '13px', fontWeight: 600, color: point.color, marginBottom: '6px', lineHeight: 1.4 }}>
+        {point.heading}
+      </div>
+      <div style={{ fontSize: '12px', color: D.textMuted, lineHeight: 1.7 }}>
+        {point.body}
+      </div>
+    </div>
+  )
+}
+
 export default function ExecutiveReport() {
   const clientId        = getClientId()
   const today           = new Date().toISOString().split('T')[0]
@@ -63,9 +165,11 @@ export default function ExecutiveReport() {
     queryFn:  () => getDashboard(clientId)
   })
 
-  if (pLoading || dLoading) return <div style={{ ...mono, color: D.textDim, padding: '2rem' }}>Generating report...</div>
+  if (pLoading || dLoading) return (
+    <div style={{ ...mono, color: D.textDim, padding: '2rem' }}>Generating report...</div>
+  )
 
-  const total = parseInt(posture.critical) + parseInt(posture.high) + parseInt(posture.medium) + parseInt(posture.low)
+  const total   = parseInt(posture.critical) + parseInt(posture.high) + parseInt(posture.medium) + parseInt(posture.low)
   const pieData = [
     { name: 'Critical', value: parseInt(posture.critical), color: '#E24B4A' },
     { name: 'High',     value: parseInt(posture.high),     color: '#BA7517' },
@@ -75,17 +179,18 @@ export default function ExecutiveReport() {
 
   const overallRisk = parseInt(posture.kev_total) > 0 ? 'HIGH' : parseInt(posture.critical) > 10 ? 'ELEVATED' : 'MODERATE'
   const riskColor   = overallRisk === 'HIGH' ? '#E24B4A' : overallRisk === 'ELEVATED' ? '#BA7517' : '#1D9E75'
+  const whyPoints   = buildWhyItMatters(posture, dash?.top_critical || [])
 
   return (
     <div>
-      {/* Mode toggle + export */}
+      {/* Mode toggle */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
         <div style={{ display: 'flex', gap: 0, border: `0.5px solid ${D.border}`, borderRadius: '6px', overflow: 'hidden' }}>
           {[['executive', 'Executive'], ['technical', 'Technical']].map(([val, label]) => (
             <button key={val} onClick={() => setMode(val)} style={{
               ...mono, fontSize: '12px', padding: '6px 18px', border: 'none', cursor: 'pointer',
               background: mode === val ? D.text : 'transparent',
-              color:      mode === val ? '#0a0a0a' : D.textMuted
+              color:      mode === val ? '#0a0a0a' : D.textMuted,
             }}>{label}</button>
           ))}
         </div>
@@ -94,7 +199,7 @@ export default function ExecutiveReport() {
         </button>
       </div>
 
-      {/* EXECUTIVE MODE — dark */}
+      {/* EXECUTIVE MODE */}
       {mode === 'executive' && (
         <div style={{ background: D.bg, borderRadius: '12px', padding: '2rem', border: `0.5px solid ${D.border}` }}>
 
@@ -110,36 +215,50 @@ export default function ExecutiveReport() {
             <ExecKpi
               num={overallRisk}
               label="Overall Risk Level"
-              desc={parseInt(posture.kev_total) > 0 ? `${posture.kev_total} actively exploited vulnerabilities confirmed` : `${posture.critical} critical vulnerabilities require attention`}
+              desc={parseInt(posture.kev_total) > 0
+                ? `${posture.kev_total} actively exploited vulnerabilities confirmed`
+                : `${posture.critical} critical vulnerabilities require attention`}
               color={{ bg: `${riskColor}22`, border: `${riskColor}55`, text: riskColor }}
             />
             <ExecKpi
-              num={posture.kev_total}
+              num={parseInt(posture.kev_total).toLocaleString()}
               label="Actively Exploited"
               desc="Confirmed by US Government (CISA KEV) as exploited in the wild right now"
               color={{ bg: '#2a1010', border: '#E24B4A44', text: '#E24B4A' }}
             />
             <ExecKpi
-              num={posture.critical}
+              num={parseInt(posture.critical).toLocaleString()}
               label="Critical Issues"
               desc="Vulnerabilities scoring 75+ requiring immediate action"
               color={{ bg: '#1f1500', border: '#BA751744', text: '#BA7517' }}
             />
           </div>
 
+          {/* Why it matters — before top threats */}
+          <Section title="Why this matters">
+            <div style={{ fontSize: '12px', color: D.textMuted, lineHeight: 1.7, marginBottom: '14px' }}>
+              The numbers above represent real exposure — not theoretical risk. Below is what they mean in plain terms,
+              and why each figure should inform decisions made this week.
+            </div>
+            {whyPoints.map((point, i) => (
+              <WhyItMattersPoint key={i} point={point} />
+            ))}
+          </Section>
+
           {/* Top threats */}
           <Section title="Top threats requiring attention">
-            {dash.top_critical.slice(0, 3).map((cve, i) => (
+            {dash.top_critical.slice(0, 5).map((cve, i) => (
               <div key={cve.cve_id} style={{ display: 'flex', gap: '12px', padding: '12px', background: D.bg2, borderRadius: '8px', marginBottom: '8px', border: `0.5px solid ${D.border}` }}>
                 <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#E24B4A', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 600, flexShrink: 0 }}>{i + 1}</div>
-                <div>
+                <div style={{ flex: 1 }}>
                   <div style={{ ...mono, fontSize: '12px', fontWeight: 500, color: '#5b9bd5', marginBottom: '3px' }}>
                     {cve.kev_member ? 'Actively Exploited: ' : ''}{cve.cve_id}
                   </div>
                   <div style={{ fontSize: '12px', color: D.textMuted, lineHeight: 1.5 }}>{cve.description}</div>
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
-                    {cve.kev_member && <span style={{ ...mono, fontSize: '10px', background: '#2a1010', color: '#E24B4A', padding: '2px 6px', borderRadius: '3px', fontWeight: 500 }}>Confirmed Exploited</span>}
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                    {cve.kev_member     && <span style={{ ...mono, fontSize: '10px', background: '#2a1010', color: '#E24B4A', padding: '2px 6px', borderRadius: '3px', fontWeight: 500 }}>Confirmed Exploited</span>}
                     {!cve.patch_available && <span style={{ ...mono, fontSize: '10px', background: '#1a1010', color: '#A32D2D', padding: '2px 6px', borderRadius: '3px' }}>No patch available</span>}
+                    {cve.exploit_available && <span style={{ ...mono, fontSize: '10px', background: '#1a1000', color: '#BA7517', padding: '2px 6px', borderRadius: '3px' }}>Public exploit exists</span>}
                     <span style={{ ...mono, fontSize: '10px', background: D.bg3, color: D.textMuted, padding: '2px 6px', borderRadius: '3px' }}>Score: {parseFloat(cve.adjusted_score).toFixed(0)}/100</span>
                   </div>
                 </div>
@@ -152,23 +271,28 @@ export default function ExecutiveReport() {
             {parseInt(posture.kev_total) > 0 && (
               <ActionRow dot="#E24B4A" bg="#1f0a0a"
                 label="Act this week"
-                desc={`Apply patches or mitigations for ${posture.kev_total} actively exploited vulnerabilities. Confirmed by CISA as being used in real attacks.`}
+                desc={`Apply patches or mitigations for the highest-scoring actively exploited vulnerabilities. Prioritise those with no patch available — compensating controls are the only option until vendors respond.`}
               />
             )}
             {parseInt(posture.pre_kev_total) > 0 && (
               <ActionRow dot="#BA7517" bg="#1a1000"
                 label="Plan this month"
-                desc={`Review ${posture.pre_kev_total} vulnerabilities flagged as likely to be exploited soon — early warning before official confirmation.`}
+                desc={`${posture.pre_kev_total.toLocaleString()} vulnerabilities show early exploitation signals. Schedule review before they reach confirmed-exploited status — acting now costs less than responding to an incident.`}
               />
             )}
             <ActionRow dot="#888780" bg={D.bg2}
               label="Ongoing monitoring"
-              desc={`${posture.medium} medium-severity vulnerabilities are being monitored. Alerts will fire if any escalate.`}
+              desc={`${parseInt(posture.medium).toLocaleString()} medium-severity vulnerabilities are under continuous monitoring. Review escalation criteria with your team to ensure alerts surface the right issues at the right time.`}
             />
           </Section>
 
           {/* Distribution */}
           <Section title="Vulnerability distribution">
+            <div style={{ fontSize: '12px', color: D.textMuted, lineHeight: 1.6, marginBottom: '12px' }}>
+              Distribution by severity band across all {total.toLocaleString()} tracked vulnerabilities.
+              Note that severity reflects exploitation complexity, not business impact — a low-severity
+              vulnerability in a critical system may warrant higher priority than its rating suggests.
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '2rem' }}>
               <PieChart width={180} height={180}>
                 <Pie data={pieData} cx={85} cy={85} innerRadius={50} outerRadius={80} dataKey="value" strokeWidth={0}>
@@ -223,12 +347,13 @@ export default function ExecutiveReport() {
 
           <div style={{ marginBottom: '1.25rem' }}>
             <div style={{ ...mono, fontSize: '11px', color: D.textDim, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Top critical CVEs</div>
-            {dash.top_critical.map((cve) => (
-              <div key={cve.cve_id} style={{ padding: '10px 14px', background: D.bg2, borderRadius: '8px', marginBottom: '6px', display: 'grid', gridTemplateColumns: '120px 1fr auto auto', gap: '12px', alignItems: 'center' }}>
+            {dash.top_critical.map(cve => (
+              <div key={cve.cve_id} style={{ padding: '10px 14px', background: D.bg2, borderRadius: '8px', marginBottom: '6px', display: 'grid', gridTemplateColumns: '130px 1fr auto auto', gap: '12px', alignItems: 'center' }}>
                 <span style={{ ...mono, fontSize: '11px', color: '#5b9bd5' }}>{cve.cve_id}</span>
-                <span style={{ fontSize: '12px', color: D.textMuted }}>{cve.description?.slice(0, 70)}...</span>
+                <span style={{ fontSize: '12px', color: D.textMuted }}>{cve.description?.slice(0, 72)}...</span>
                 <div style={{ display: 'flex', gap: '4px' }}>
-                  {cve.kev_member && <span style={{ ...mono, fontSize: '10px', background: '#2a1010', color: '#E24B4A', padding: '2px 5px', borderRadius: '3px' }}>KEV</span>}
+                  {cve.kev_member        && <span style={{ ...mono, fontSize: '10px', background: '#2a1010', color: '#E24B4A', padding: '2px 5px', borderRadius: '3px' }}>KEV</span>}
+                  {cve.exploit_available && <span style={{ ...mono, fontSize: '10px', background: '#1a1000', color: '#BA7517', padding: '2px 5px', borderRadius: '3px' }}>EXPLOIT</span>}
                 </div>
                 <span style={{ ...mono, fontSize: '12px', fontWeight: 500, color: '#E24B4A' }}>{parseFloat(cve.adjusted_score).toFixed(1)}</span>
               </div>
