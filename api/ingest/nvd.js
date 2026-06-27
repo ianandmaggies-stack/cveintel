@@ -18,11 +18,13 @@ import { acquireLock, releaseLock, logStart, logComplete } from './ingestLock.js
 
 dotenv.config();
 
-const JOB_NAME = 'nvd';
-const RAW_PATH = process.env.RAW_FILES_PATH || './ingest/raw';
-const NVD_API_KEY = process.env.NVD_API_KEY || null;
-const RESULTS_PER_PAGE = 2000;
-const RATE_LIMIT_DELAY = NVD_API_KEY ? 700 : 6500;
+const JOB_NAME          = 'nvd';
+const RAW_PATH          = process.env.RAW_FILES_PATH || './ingest/raw';
+const NVD_API_KEY       = process.env.NVD_API_KEY   || null;
+const RESULTS_PER_PAGE  = 2000;
+const RATE_LIMIT_DELAY  = NVD_API_KEY ? 700 : 6500;
+const BATCH_SIZE        = 100;   // records per multi-row upsert
+const CPE_BATCH_SIZE    = 500;   // CPE rows per insert
 
 // ============================================
 // Fetch
@@ -47,17 +49,17 @@ function fetchPage(url) {
 
 async function fetchAllPages(baseUrl) {
   const all = [];
-  let startIndex = 0, total = null, page = 0;
+  let startIndex = 0, total = null, pageNum = 0;
   do {
     const url = `${baseUrl}&resultsPerPage=${RESULTS_PER_PAGE}&startIndex=${startIndex}`;
-    page++;
+    pageNum++;
     let retries = 3, result = null;
     while (retries > 0) {
       try { result = await fetchPage(url); break; }
       catch (err) {
         retries--;
         if (retries === 0) throw err;
-        console.log(`  Retry ${3-retries}/3: ${err.message}`);
+        console.log(`  Retry ${3 - retries}/3: ${err.message}`);
         await sleep(RATE_LIMIT_DELAY * 2);
       }
     }
@@ -65,7 +67,7 @@ async function fetchAllPages(baseUrl) {
     const vulns = result.vulnerabilities || [];
     all.push(...vulns);
     startIndex += vulns.length;
-    console.log(`  Page ${page}: ${vulns.length} fetched (${all.length}/${total})`);
+    console.log(`  Page ${pageNum}: ${vulns.length} fetched (${all.length}/${total})`);
     if (startIndex < total) await sleep(RATE_LIMIT_DELAY);
   } while (startIndex < total);
   return all;
@@ -78,24 +80,24 @@ async function fetchAllPages(baseUrl) {
 function parseCvssVector(vector) {
   if (!vector) return {};
   const p = {};
-  for (const seg of vector.split('/')) { const [k,v] = seg.split(':'); p[k] = v; }
+  for (const seg of vector.split('/')) { const [k, v] = seg.split(':'); p[k] = v; }
   return {
-    attack_vector:       ({ N:'network', A:'adjacent', L:'local', P:'physical' })[p['AV']] || null,
-    privileges_required: ({ N:'none', L:'low', H:'high' })[p['PR']] || null,
-    user_interaction:    ({ N:'none', R:'required' })[p['UI']] || null,
-    scope:               ({ U:'unchanged', C:'changed' })[p['S']] || null,
+    attack_vector:       ({ N: 'network', A: 'adjacent', L: 'local', P: 'physical' })[p['AV']] || null,
+    privileges_required: ({ N: 'none',    L: 'low',      H: 'high'  })[p['PR']]    || null,
+    user_interaction:    ({ N: 'none',    R: 'required'              })[p['UI']]    || null,
+    scope:               ({ U: 'unchanged', C: 'changed'             })[p['S']]     || null,
   };
 }
 
 function extractCvss(cve) {
-  const m = cve.metrics || {};
+  const m    = cve.metrics || {};
   const data = m.cvssMetricV31?.[0]?.cvssData || m.cvssMetricV30?.[0]?.cvssData || m.cvssMetricV2?.[0]?.cvssData || null;
   if (!data) return { cvss_base: null, cvss_vector: null, cvss_version: null, ...parseCvssVector(null) };
   return { cvss_base: data.baseScore, cvss_vector: data.vectorString, cvss_version: data.version, ...parseCvssVector(data.vectorString) };
 }
 
 function extractCwe(cve) {
-  for (const w of (cve.weaknesses || []))
+  for (const w of (cve.weaknesses  || []))
     for (const d of (w.description || []))
       if (d.value?.startsWith('CWE-')) return d.value;
   return null;
@@ -113,22 +115,22 @@ function extractCpes(cveId, configurations) {
       for (const match of (node.cpeMatch || []))
         if (match.vulnerable && match.criteria) {
           const p = match.criteria.split(':');
-          cpes.push({ cve_id: cveId, cpe_string: match.criteria, vendor: p[3]||null, product: p[4]||null, version: p[5]||null });
+          cpes.push({ cve_id: cveId, cpe_string: match.criteria, vendor: p[3] || null, product: p[4] || null, version: p[5] || null });
         }
   return cpes;
 }
 
 function hasPatch(cve) {
-  const tags = ['Patch','Vendor Advisory','Mitigation'];
-  return (cve.references||[]).some(r => (r.tags||[]).some(t => tags.includes(t)));
+  const tags = ['Patch', 'Vendor Advisory', 'Mitigation'];
+  return (cve.references || []).some(r => (r.tags || []).some(t => tags.includes(t)));
 }
 
 function transformCve(item) {
-  const cve = item.cve;
+  const cve  = item.cve;
   const cvss = extractCvss(cve);
   return {
     core: {
-      cve_id: cve.id,
+      cve_id:              cve.id,
       published_date:      cve.published?.split('T')[0]    || null,
       modified_date:       cve.lastModified?.split('T')[0] || null,
       description:         extractDescription(cve),
@@ -141,7 +143,7 @@ function transformCve(item) {
       privileges_required: cvss.privileges_required,
       user_interaction:    cvss.user_interaction,
       scope:               cvss.scope,
-      source_updated:      new Date()
+      source_updated:      new Date(),
     },
     cpes: extractCpes(cve.id, cve.configurations)
   };
@@ -152,7 +154,7 @@ function transformCve(item) {
 // ============================================
 
 async function loadVendorMap() {
-  const r = await pool.query('SELECT vendor_pattern, platform_tag FROM platform_vendor_map');
+  const r   = await pool.query('SELECT vendor_pattern, platform_tag FROM platform_vendor_map');
   const map = new Map();
   for (const row of r.rows) map.set(row.vendor_pattern.toLowerCase(), row.platform_tag);
   return map;
@@ -167,49 +169,106 @@ function getPlatformTag(vendor, vendorMap) {
 }
 
 // ============================================
-// Upsert
+// Batch upsert — multi-row for speed
 // ============================================
 
-async function upsertCveBatch(records, vendorMap) {
-  let inserted = 0, updated = 0, failed = 0;
-  for (const { core, cpes } of records) {
-    try {
-      const r = await pool.query(
-        `INSERT INTO cve_core (
-           cve_id, published_date, modified_date, description,
-           cvss_base, cvss_vector, cvss_version, cwe_id,
-           patch_available, attack_vector, privileges_required,
-           user_interaction, scope, source_updated
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-         ON CONFLICT (cve_id) DO UPDATE SET
-           modified_date = EXCLUDED.modified_date, description = EXCLUDED.description,
-           cvss_base = EXCLUDED.cvss_base, cvss_vector = EXCLUDED.cvss_vector,
-           cvss_version = EXCLUDED.cvss_version, cwe_id = EXCLUDED.cwe_id,
-           patch_available = EXCLUDED.patch_available, attack_vector = EXCLUDED.attack_vector,
-           privileges_required = EXCLUDED.privileges_required,
-           user_interaction = EXCLUDED.user_interaction, scope = EXCLUDED.scope,
-           source_updated = EXCLUDED.source_updated
-         WHERE cve_core.modified_date IS DISTINCT FROM EXCLUDED.modified_date
-         RETURNING (xmax = 0) AS is_insert`,
-        [core.cve_id, core.published_date, core.modified_date, core.description,
-         core.cvss_base, core.cvss_vector, core.cvss_version, core.cwe_id,
-         core.patch_available, core.attack_vector, core.privileges_required,
-         core.user_interaction, core.scope, core.source_updated]
-      );
-      if (r.rows.length > 0) {
-        if (r.rows[0].is_insert) { inserted++; }
-        else { updated++; await pool.query('DELETE FROM cve_cpe WHERE cve_id = $1', [core.cve_id]); }
-        for (const cpe of cpes) {
-          await pool.query(
-            `INSERT INTO cve_cpe (cve_id, cpe_string, vendor, product, version, platform_tag)
-             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-            [cpe.cve_id, cpe.cpe_string, cpe.vendor, cpe.product, cpe.version, getPlatformTag(cpe.vendor, vendorMap)]
-          );
-        }
-      }
-    } catch (err) { console.error(`Failed ${core.cve_id}:`, err.message); failed++; }
+async function upsertCoreBatch(cores) {
+  if (cores.length === 0) return { inserted: 0, updated: 0 };
+
+  // Build multi-row VALUES clause
+  const cols = 14;
+  const values = [];
+  const params = [];
+  cores.forEach((c, i) => {
+    const base = i * cols;
+    values.push(`($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10},$${base+11},$${base+12},$${base+13},$${base+14})`);
+    params.push(
+      c.cve_id, c.published_date, c.modified_date, c.description,
+      c.cvss_base, c.cvss_vector, c.cvss_version, c.cwe_id,
+      c.patch_available, c.attack_vector, c.privileges_required,
+      c.user_interaction, c.scope, c.source_updated
+    );
+  });
+
+  const sql = `
+    INSERT INTO cve_core (
+      cve_id, published_date, modified_date, description,
+      cvss_base, cvss_vector, cvss_version, cwe_id,
+      patch_available, attack_vector, privileges_required,
+      user_interaction, scope, source_updated
+    ) VALUES ${values.join(',')}
+    ON CONFLICT (cve_id) DO UPDATE SET
+      modified_date        = EXCLUDED.modified_date,
+      description          = EXCLUDED.description,
+      cvss_base            = EXCLUDED.cvss_base,
+      cvss_vector          = EXCLUDED.cvss_vector,
+      cvss_version         = EXCLUDED.cvss_version,
+      cwe_id               = EXCLUDED.cwe_id,
+      patch_available      = EXCLUDED.patch_available,
+      attack_vector        = EXCLUDED.attack_vector,
+      privileges_required  = EXCLUDED.privileges_required,
+      user_interaction     = EXCLUDED.user_interaction,
+      scope                = EXCLUDED.scope,
+      source_updated       = EXCLUDED.source_updated
+    WHERE cve_core.modified_date IS DISTINCT FROM EXCLUDED.modified_date
+    RETURNING cve_id, (xmax = 0) AS is_insert
+  `;
+
+  const r = await pool.query(sql, params);
+  const inserted = r.rows.filter(row => row.is_insert).length;
+  const updated  = r.rows.filter(row => !row.is_insert).length;
+  return { inserted, updated, touched: r.rows.map(row => row.cve_id) };
+}
+
+async function deleteStaleCpes(cveIds) {
+  if (cveIds.length === 0) return;
+  const params = cveIds.map((_, i) => `$${i + 1}`).join(',');
+  await pool.query(`DELETE FROM cve_cpe WHERE cve_id IN (${params})`, cveIds);
+}
+
+async function insertCpeBatch(cpes, vendorMap) {
+  if (cpes.length === 0) return;
+  const cols   = 6;
+  const values = [];
+  const params = [];
+  cpes.forEach((c, i) => {
+    const base = i * cols;
+    values.push(`($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6})`);
+    params.push(c.cve_id, c.cpe_string, c.vendor, c.product, c.version, getPlatformTag(c.vendor, vendorMap));
+  });
+  await pool.query(
+    `INSERT INTO cve_cpe (cve_id, cpe_string, vendor, product, version, platform_tag)
+     VALUES ${values.join(',')}
+     ON CONFLICT DO NOTHING`,
+    params
+  );
+}
+
+async function processBatch(records, vendorMap) {
+  const cores = records.map(r => r.core);
+
+  // 1. Upsert all core records in one query
+  const { inserted, updated, touched } = await upsertCoreBatch(cores);
+
+  // 2. Delete stale CPEs only for updated records (not new inserts)
+  const updatedIds = records
+    .filter(r => touched.includes(r.core.cve_id))
+    .filter((_, i) => !records[i]?.isNew) // heuristic: touched but not inserted = updated
+    .map(r => r.core.cve_id);
+
+  // Simpler: delete CPEs for all touched records, re-insert fresh
+  if (touched.length > 0) await deleteStaleCpes(touched);
+
+  // 3. Collect all CPEs and batch insert
+  const allCpes = records
+    .filter(r => touched.includes(r.core.cve_id))
+    .flatMap(r => r.cpes);
+
+  for (let i = 0; i < allCpes.length; i += CPE_BATCH_SIZE) {
+    await insertCpeBatch(allCpes.slice(i, i + CPE_BATCH_SIZE), vendorMap);
   }
-  return { inserted, updated, failed };
+
+  return { inserted, updated, failed: 0 };
 }
 
 // ============================================
@@ -219,13 +278,12 @@ async function upsertCveBatch(records, vendorMap) {
 async function runNvdIngest() {
   const fullMode = process.argv.includes('--full');
   console.log(`\n[NVD] Starting ${fullMode ? 'FULL' : 'DELTA'} ingest — ${new Date().toISOString()}`);
-  if (!NVD_API_KEY) console.warn('  WARNING: No NVD_API_KEY. Rate limited to 5 req/30s.');
+  if (!NVD_API_KEY) console.warn('  WARNING: No NVD_API_KEY set. Rate limited to 5 req/30s — fetch will be slow.');
 
-  // Acquire lock — auto-clears stale locks older than 6h
   const locked = await acquireLock(pool, JOB_NAME);
   if (!locked) { await pool.end(); return; }
 
-  const logId = await logStart(pool, JOB_NAME);
+  const logId  = await logStart(pool, JOB_NAME);
   const counts = { status: 'failed', fetched: 0, inserted: 0, updated: 0, failed: 0, error: null };
 
   try {
@@ -244,33 +302,48 @@ async function runNvdIngest() {
 
     const vulnerabilities = await fetchAllPages(baseUrl);
     counts.fetched = vulnerabilities.length;
+    console.log(`  Fetched ${counts.fetched} CVEs. Transforming...`);
 
-    if (vulnerabilities.length === 0) {
-      console.log('  No CVEs in window — nothing to do');
+    if (counts.fetched === 0) {
+      console.log('  No CVEs in window — nothing to do.');
       counts.status = 'success';
     } else {
       const records = vulnerabilities.map(transformCve);
-      const batchSize = 500;
-      for (let i = 0; i < records.length; i += batchSize) {
-        const r = await upsertCveBatch(records.slice(i, i + batchSize), vendorMap);
-        counts.inserted += r.inserted;
-        counts.updated  += r.updated;
-        counts.failed   += r.failed;
-        if (i % 5000 === 0 && i > 0) console.log(`  Progress: ${i}/${records.length}`);
+
+      console.log(`  Upserting in batches of ${BATCH_SIZE}...`);
+      const start = Date.now();
+
+      for (let i = 0; i < records.length; i += BATCH_SIZE) {
+        const batch  = records.slice(i, i + BATCH_SIZE);
+        const result = await processBatch(batch, vendorMap);
+        counts.inserted += result.inserted;
+        counts.updated  += result.updated;
+        counts.failed   += result.failed;
+
+        if ((i + BATCH_SIZE) % 1000 === 0 || i + BATCH_SIZE >= records.length) {
+          const pct  = Math.min(100, Math.round(((i + BATCH_SIZE) / records.length) * 100));
+          const secs = ((Date.now() - start) / 1000).toFixed(0);
+          console.log(`  Progress: ${Math.min(i + BATCH_SIZE, records.length)}/${records.length} (${pct}%) — ${secs}s elapsed`);
+        }
       }
+
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      console.log(`\n[NVD] DB write complete in ${elapsed}s — ${counts.inserted} inserted, ${counts.updated} updated, ${counts.failed} failed`);
+
       const rawPath = path.join(RAW_PATH, `nvd_${fullMode ? 'full' : 'delta'}_latest.json`);
       fs.writeFileSync(rawPath, JSON.stringify({ count: vulnerabilities.length, timestamp: new Date() }));
       counts.status = 'success';
-      console.log(`\n[NVD] Complete — ${counts.inserted} inserted, ${counts.updated} updated, ${counts.failed} failed`);
     }
 
   } catch (err) {
     counts.error = err.message;
     console.error(`\n[NVD] Failed:`, err.message);
   } finally {
-    await logComplete(pool, logId, counts);
-    await releaseLock(pool, JOB_NAME);
-    pool.end();
+    // IMPORTANT: logComplete and releaseLock MUST complete before pool.end()
+    // pool.end() closes all connections immediately — always call it last
+    try { await logComplete(pool, logId, counts); } catch (e) { console.error('logComplete failed:', e.message); }
+    try { await releaseLock(pool, JOB_NAME);      } catch (e) { console.error('releaseLock failed:', e.message); }
+    await pool.end();
   }
 }
 
